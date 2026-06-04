@@ -29,71 +29,33 @@ makeKey() {
 }
 
 listKeys() {
-	keys=$(ls $WARDEN_DIRECTORY)
+	# The listing/sort work lives in a small C++ binary (list.cpp). The old pure-bash
+	# version used an O(n^2) insertion sort that forked an `expr` per arithmetic op,
+	# which made `list` painfully slow. Build the binary on demand if it is missing
+	# or older than its source, then run it.
+	src="$SCRIPT_DIR/list.cpp"
+	bin="$SCRIPT_DIR/bin/warden-list"
 
-	timestampArr=()
-	displayArr=()
-	for key in $keys; do
-		if [ "$key" == "master.md" ]; then
-			continue
-		fi
-		file="$WARDEN_DIRECTORY/$key"
-		title=$(head -n 1 $file)
-		hashtags=$(head -n 2 $file | tail -n 1)
-		if [ "$hashtags" == "$ENCRYPTED_ROW" ]; then
-			hashtags=""
-		fi
-		timestampArr+=($(tail -n 1 $file))
-		displayArr+=("${Cyan}- $key ${Color_Off}$title ${Purple}$hashtags${Color_Off}")
-	done
-
-	# insertion sort https://www.geeksforgeeks.org/sorting-an-array-in-bash-using-insertion-sort/
-	n=${#timestampArr[@]}
-	j=1
-	while [ $j -lt $n ] 
-	do
-		percent=$(expr $j \* 100 / $n)
-		echo "Sorting $percent ..."
-		c=0
-		k=$(expr $j - 1)
-		while [ $k -ge 0 ] 
-		do
-			if [ ${timestampArr[k]} -gt ${timestampArr[j]} ] 
-			then
-				c=$(expr $c + 1)
+	if [ ! -x "$bin" ] || [ "$src" -nt "$bin" ]; then
+		mkdir -p "$SCRIPT_DIR/bin"
+		compiler=""
+		for candidate in c++ g++ clang++; do
+			if command -v "$candidate" >/dev/null 2>&1; then
+				compiler="$candidate"
+				break
 			fi
-		k=$(expr $k - 1)
 		done
-		
-		x=$j
-		y=$(expr $j - 1)
-		
-		while [ $c -gt 0 ]
-		do
-			# Swapping the elements
-			timestampTemp=${timestampArr[x]}
-			timestampArr[$x]=${timestampArr[y]}
-			timestampArr[$y]=$timestampTemp
+		if [ -z "$compiler" ]; then
+			echo -e "${Red}No C++ compiler (c++/g++/clang++) found to build the list helper.${Color_Off}" >&2
+			return 1
+		fi
+		if ! "$compiler" -O2 -std=c++17 "$src" -o "$bin"; then
+			echo -e "${Red}Failed to compile $src${Color_Off}" >&2
+			return 1
+		fi
+	fi
 
-			displayTemp=${displayArr[x]}
-			displayArr[$x]=${displayArr[y]}
-			displayArr[$y]=$displayTemp
-			
-			x=$(expr $x - 1)
-			y=$(expr $y - 1)
-			c=$(expr $c - 1)
-		done
-		
-		j=$(expr $j + 1)
-	done
-
-	echo "Sorting 100 ..."
-	echo
-	echo
-
-	for display in "${displayArr[@]}"; do
-		echo -e "$display"
-	done
+	"$bin" "$WARDEN_DIRECTORY"
 }
 
 findKeys() {
