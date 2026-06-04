@@ -31,31 +31,60 @@ makeKey() {
 listKeys() {
 	# The listing/sort work lives in a small C++ binary (list.cpp). The old pure-bash
 	# version used an O(n^2) insertion sort that forked an `expr` per arithmetic op,
-	# which made `list` painfully slow. Build the binary on demand if it is missing
-	# or older than its source, then run it.
+	# which made `list` painfully slow.
+	#
+	# Fast path: build the binary on demand (if missing or older than its source) and
+	# run it. On a machine with no C++ compiler we fall back to listKeysFallback, which
+	# is still fast (uses `sort` instead of the quadratic bash sort) and needs no build.
 	src="$SCRIPT_DIR/list.cpp"
 	bin="$SCRIPT_DIR/bin/warden-list"
 
-	if [ ! -x "$bin" ] || [ "$src" -nt "$bin" ]; then
-		mkdir -p "$SCRIPT_DIR/bin"
-		compiler=""
-		for candidate in c++ g++ clang++; do
-			if command -v "$candidate" >/dev/null 2>&1; then
-				compiler="$candidate"
-				break
-			fi
-		done
-		if [ -z "$compiler" ]; then
-			echo -e "${Red}No C++ compiler (c++/g++/clang++) found to build the list helper.${Color_Off}" >&2
-			return 1
-		fi
-		if ! "$compiler" -O2 -std=c++17 "$src" -o "$bin"; then
-			echo -e "${Red}Failed to compile $src${Color_Off}" >&2
-			return 1
-		fi
+	if [ -x "$bin" ] && [ ! "$src" -nt "$bin" ]; then
+		"$bin" "$WARDEN_DIRECTORY"
+		return
 	fi
 
-	"$bin" "$WARDEN_DIRECTORY"
+	compiler=""
+	for candidate in c++ g++ clang++; do
+		if command -v "$candidate" >/dev/null 2>&1; then
+			compiler="$candidate"
+			break
+		fi
+	done
+
+	if [ -n "$compiler" ]; then
+		mkdir -p "$SCRIPT_DIR/bin"
+		if "$compiler" -O2 -std=c++17 "$src" -o "$bin"; then
+			"$bin" "$WARDEN_DIRECTORY"
+			return
+		fi
+		echo -e "${Red}Failed to compile $src; using bash fallback.${Color_Off}" >&2
+	fi
+
+	listKeysFallback
+}
+
+# Compiler-free fast path for `list`. Reads each file (linear), tab-prefixes each
+# display row with its timestamp, and lets `sort -n` do the ordering -- replacing
+# the old O(n^2) bash insertion sort. Output matches the C++ helper byte-for-byte.
+listKeysFallback() {
+	keys=$(ls "$WARDEN_DIRECTORY")
+	for key in $keys; do
+		if [ "$key" == "master.md" ]; then
+			continue
+		fi
+		file="$WARDEN_DIRECTORY/$key"
+		title=$(head -n 1 "$file")
+		hashtags=$(head -n 2 "$file" | tail -n 1)
+		if [ "$hashtags" == "$ENCRYPTED_ROW" ]; then
+			hashtags=""
+		fi
+		timestamp=$(tail -n 1 "$file")
+		# <timestamp>\t<display row>. The display row contains no tabs, so cut can
+		# strip the sort key afterwards.
+		printf '%s\t%b- %s %b%s %b%s%b\n' \
+			"$timestamp" "$Cyan" "$key" "$Color_Off" "$title" "$Purple" "$hashtags" "$Color_Off"
+	done | sort -n -s -k1,1 | cut -f2-
 }
 
 findKeys() {
